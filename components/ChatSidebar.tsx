@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
@@ -142,11 +143,29 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [attachedImage, setAttachedImage] = useState<{file: File, url: string} | null>(null);
+    const [apiKeyError, setApiKeyError] = useState(false);
     const imageInputRef = useRef<HTMLInputElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const aiRef = useRef<GoogleGenAI | null>(null);
 
-    const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+    useEffect(() => {
+        try {
+            // This is the only way to initialize according to instructions.
+            // In a browser-only environment without a build step, `process` is not defined.
+            // This will throw an error, which we catch to prevent the app from crashing.
+            const apiKey = process.env.API_KEY;
+            if (!apiKey) {
+                console.error("API_KEY environment variable not set. Chat is disabled.");
+                setApiKeyError(true);
+                return;
+            }
+            aiRef.current = new GoogleGenAI({apiKey: apiKey});
+        } catch (error) {
+            console.error("Failed to initialize AI Client. API_KEY may be missing or `process` is not defined in this environment.", error);
+            setApiKeyError(true);
+        }
+    }, []);
 
     useEffect(() => {
         saveChatToLocalStorage(messages);
@@ -163,7 +182,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
     }, [input]);
 
     const handleSendMessage = async () => {
-        if ((!input.trim() && !attachedImage) || isLoading) return;
+        if ((!input.trim() && !attachedImage) || isLoading || !aiRef.current) return;
 
         const userMessageText = input.trim();
         const userMessage: Message = { role: 'user', text: userMessageText, image: attachedImage?.url };
@@ -174,7 +193,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
         setIsLoading(true);
 
         try {
-            const contents = [];
+            const contents: any[] = [];
             
             if (attachedImage) {
                 const base64Image = await fileToBase64(attachedImage.file);
@@ -187,7 +206,8 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
                 promptText = `Based on the following file contents, please answer the user's question.\n\nFILE CONTEXT:\n${fileContents}\n\nUSER QUESTION:\n${userMessageText}`;
             }
              contents.push({ text: promptText });
-
+            
+            const ai = aiRef.current;
             const response = await ai.models.generateContent({
               model: 'gemini-2.5-flash',
               contents: { parts: contents },
@@ -246,7 +266,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
                         </div>
                     )}
                     <div className="flex items-end gap-2 bg-gray-700 rounded-lg p-2">
-                        <button onClick={() => imageInputRef.current?.click()} className="p-2 text-gray-400 hover:text-white flex-shrink-0">
+                        <button onClick={() => imageInputRef.current?.click()} disabled={apiKeyError} className="p-2 text-gray-400 hover:text-white flex-shrink-0 disabled:text-gray-600 disabled:cursor-not-allowed">
                             <PaperclipIcon />
                         </button>
                         <input type="file" ref={imageInputRef} onChange={handleImageAttach} accept="image/*" className="hidden" />
@@ -256,13 +276,19 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-                            placeholder="Ask about your files..."
-                            className="flex-1 bg-transparent text-white placeholder-gray-400 focus:outline-none resize-none max-h-32"
+                            placeholder={apiKeyError ? "API Key not configured." : "Ask about your files..."}
+                            className="flex-1 bg-transparent text-white placeholder-gray-400 focus:outline-none resize-none max-h-32 disabled:cursor-not-allowed"
+                            disabled={apiKeyError}
                         />
-                        <button onClick={handleSendMessage} disabled={isLoading || (!input.trim() && !attachedImage)} className="p-2 bg-blue-600 rounded-full text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex-shrink-0 transition-colors">
+                        <button onClick={handleSendMessage} disabled={isLoading || (!input.trim() && !attachedImage) || apiKeyError} className="p-2 bg-blue-600 rounded-full text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex-shrink-0 transition-colors">
                             <ChevronRightIcon className="w-5 h-5 transform -rotate-45" />
                         </button>
                     </div>
+                     {apiKeyError && (
+                        <p className="text-xs text-red-400 text-center mt-2 px-2">
+                           The AI Analyst is disabled. The API_KEY is not available in the environment.
+                        </p>
+                    )}
                 </div>
             </aside>
         </>
