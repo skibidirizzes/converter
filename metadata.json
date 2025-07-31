@@ -1,0 +1,7 @@
+{
+  "name": "File Converter & Downloader",
+  "description": "A sleek and efficient tool to drag and drop files, convert them to different types, and download them. Features flexible download options (preserve folders or flat), single .txt export, and a context-aware AI chat sidebar to analyze your file content.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
