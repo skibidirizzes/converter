@@ -376,6 +376,13 @@ function App() {
 
     return (
         <div className="h-screen w-screen flex bg-gray-900 text-gray-100 font-sans relative overflow-hidden">
+            <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                className="hidden"
+                multiple
+            />
             {isLoading && <Loader />}
             <ChatSidebar 
                 files={processedFiles} 
