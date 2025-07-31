@@ -1,7 +1,4 @@
-
-
 import React, { useState, useEffect, useRef } from 'react';
-import { GoogleGenAI } from '@google/genai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -143,29 +140,9 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [attachedImage, setAttachedImage] = useState<{file: File, url: string} | null>(null);
-    const [apiKeyError, setApiKeyError] = useState(false);
     const imageInputRef = useRef<HTMLInputElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const aiRef = useRef<GoogleGenAI | null>(null);
-
-    useEffect(() => {
-        try {
-            // This is the only way to initialize according to instructions.
-            // In a browser-only environment without a build step, `process` is not defined.
-            // This will throw an error, which we catch to prevent the app from crashing.
-            const apiKey = process.env.API_KEY;
-            if (!apiKey) {
-                console.error("API_KEY environment variable not set. Chat is disabled.");
-                setApiKeyError(true);
-                return;
-            }
-            aiRef.current = new GoogleGenAI({apiKey: apiKey});
-        } catch (error) {
-            console.error("Failed to initialize AI Client. API_KEY may be missing or `process` is not defined in this environment.", error);
-            setApiKeyError(true);
-        }
-    }, []);
 
     useEffect(() => {
         saveChatToLocalStorage(messages);
@@ -182,22 +159,23 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
     }, [input]);
 
     const handleSendMessage = async () => {
-        if ((!input.trim() && !attachedImage) || isLoading || !aiRef.current) return;
+        if ((!input.trim() && !attachedImage) || isLoading) return;
 
         const userMessageText = input.trim();
         const userMessage: Message = { role: 'user', text: userMessageText, image: attachedImage?.url };
         
         setMessages(prev => [...prev, userMessage]);
         setInput('');
+        const tempAttachedImage = attachedImage;
         setAttachedImage(null);
         setIsLoading(true);
 
         try {
             const contents: any[] = [];
             
-            if (attachedImage) {
-                const base64Image = await fileToBase64(attachedImage.file);
-                contents.push({ inlineData: { mimeType: attachedImage.file.type, data: base64Image } });
+            if (tempAttachedImage) {
+                const base64Image = await fileToBase64(tempAttachedImage.file);
+                contents.push({ inlineData: { mimeType: tempAttachedImage.file.type, data: base64Image } });
             }
 
             let promptText = userMessageText;
@@ -205,19 +183,51 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
                 const fileContents = files.map(f => `--- START OF FILE: ${f.originalPath} ---\n${decodeFileContent(f.content)}\n--- END OF FILE: ${f.originalPath} ---`).join('\n\n');
                 promptText = `Based on the following file contents, please answer the user's question.\n\nFILE CONTEXT:\n${fileContents}\n\nUSER QUESTION:\n${userMessageText}`;
             }
-             contents.push({ text: promptText });
+            contents.push({ text: promptText });
             
-            const ai = aiRef.current;
-            const response = await ai.models.generateContent({
-              model: 'gemini-2.5-flash',
-              contents: { parts: contents },
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents }),
             });
+
+            if (!response.ok || !response.body) {
+                const errorBody = await response.json().catch(() => ({ error: 'Failed to parse error response.' }));
+                throw new Error(errorBody.error || response.statusText || 'Failed to get a response from the server.');
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let isFirstChunk = true;
             
-            const modelResponse: Message = { role: 'model', text: response.text };
-            setMessages(prev => [...prev, modelResponse]);
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                
+                const chunk = decoder.decode(value, { stream: true });
+
+                if (isFirstChunk) {
+                    setMessages(prev => [...prev, { role: 'model', text: chunk }]);
+                    isFirstChunk = false;
+                } else {
+                    setMessages(prev => {
+                        const lastMessageIndex = prev.length - 1;
+                        if (prev[lastMessageIndex]?.role === 'model') {
+                            const updatedMessages = [...prev];
+                            updatedMessages[lastMessageIndex] = {
+                                ...updatedMessages[lastMessageIndex],
+                                text: updatedMessages[lastMessageIndex].text + chunk,
+                            };
+                            return updatedMessages;
+                        }
+                        return prev;
+                    });
+                }
+            }
         } catch (error) {
-            console.error('Error sending message to Gemini:', error);
-            const errorMessage: Message = { role: 'model', text: 'Sorry, I encountered an error. Please check the console for details and try again.' };
+            console.error('Error sending message:', error);
+            const errorMessageText = error instanceof Error ? error.message : String(error);
+            const errorMessage: Message = { role: 'model', text: `Sorry, an error occurred: ${errorMessageText}` };
             setMessages(prev => [...prev, errorMessage]);
         } finally {
             setIsLoading(false);
@@ -258,15 +268,15 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
 
                 <div className="p-4 border-t border-gray-700 bg-gray-800/50">
                     {attachedImage && (
-                        <div className="relative mb-2 p-2 bg-gray-700 rounded-lg max-w-xs inline-block">
-                            <img src={attachedImage.url} alt="preview" className="max-h-24 rounded" />
+                        <div className="relative mb-2 p-2 bg-gray-700 rounded-lg max-w-full inline-block">
+                            <img src={attachedImage.url} alt="preview" className="max-h-32 rounded-lg object-cover" />
                             <button onClick={() => setAttachedImage(null)} className="absolute top-0 right-0 -mt-2 -mr-2 bg-red-500 rounded-full p-0.5 text-white shadow-md hover:bg-red-400">
                                 <CloseIcon className="w-4 h-4" />
                             </button>
                         </div>
                     )}
                     <div className="flex items-end gap-2 bg-gray-700 rounded-lg p-2">
-                        <button onClick={() => imageInputRef.current?.click()} disabled={apiKeyError} className="p-2 text-gray-400 hover:text-white flex-shrink-0 disabled:text-gray-600 disabled:cursor-not-allowed">
+                        <button onClick={() => imageInputRef.current?.click()} className="p-2 text-gray-400 hover:text-white flex-shrink-0 disabled:text-gray-600 disabled:cursor-not-allowed">
                             <PaperclipIcon />
                         </button>
                         <input type="file" ref={imageInputRef} onChange={handleImageAttach} accept="image/*" className="hidden" />
@@ -276,19 +286,13 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({ files, isOpen, onToggle }) =>
                             value={input}
                             onChange={(e) => setInput(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-                            placeholder={apiKeyError ? "API Key not configured." : "Ask about your files..."}
-                            className="flex-1 bg-transparent text-white placeholder-gray-400 focus:outline-none resize-none max-h-32 disabled:cursor-not-allowed"
-                            disabled={apiKeyError}
+                            placeholder={"Ask about your files..."}
+                            className="flex-1 bg-transparent text-white placeholder-gray-400 focus:outline-none resize-none max-h-32"
                         />
-                        <button onClick={handleSendMessage} disabled={isLoading || (!input.trim() && !attachedImage) || apiKeyError} className="p-2 bg-blue-600 rounded-full text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex-shrink-0 transition-colors">
+                        <button onClick={handleSendMessage} disabled={isLoading || (!input.trim() && !attachedImage)} className="p-2 bg-blue-600 rounded-full text-white disabled:bg-gray-600 disabled:cursor-not-allowed flex-shrink-0 transition-colors">
                             <ChevronRightIcon className="w-5 h-5 transform -rotate-45" />
                         </button>
                     </div>
-                     {apiKeyError && (
-                        <p className="text-xs text-red-400 text-center mt-2 px-2">
-                           The AI Analyst is disabled. The API_KEY is not available in the environment.
-                        </p>
-                    )}
                 </div>
             </aside>
         </>
